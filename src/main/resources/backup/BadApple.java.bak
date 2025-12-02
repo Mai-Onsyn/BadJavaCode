@@ -1,0 +1,794 @@
+import javax.imageio.ImageIO;
+import java.awt.*;
+import java.awt.event.InputEvent;
+import java.awt.image.BufferedImage;
+import java.awt.image.MultiResolutionImage;
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+import com.sun.jna.Native;
+import com.sun.jna.platform.win32.User32;
+import com.sun.jna.platform.win32.WinDef;
+import com.sun.jna.platform.win32.WinDef.HWND;
+import com.sun.jna.win32.StdCallLibrary;
+
+public class BadApple {
+    public static void main(String[] args) {
+        List<String> tokens = FileRecoder.tokenizeJava(new File("src/test/java/BadApple.java"));
+        String videoPath = "src/main/resources/bad apple!!!.mp4";
+        String tempFramePath = "src/main/resources/temp_frame.png";
+        String frameRecordPath = "src/main/resources/frame_record.txt";
+
+        Window window = new Window();
+        window.selectWindow("CodeFlattor – BadApple.java");
+        Robot robot;
+
+        try {
+            robot = new Robot();
+            double fps = VideoUtil.getVideoFPS(videoPath);
+
+            int frameNum = 0;
+            try {
+                frameNum = Integer.parseInt(Files.readString(Paths.get(frameRecordPath)));
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+
+            if (VideoUtil.extractFrameByNumber(videoPath, tempFramePath, frameNum, fps)) {
+                System.out.println(frameNum);
+//                    frameNum += 6;
+                AXImage frame = new AXImage(new File(tempFramePath));
+                AXImage charFrame = frame.charlize(0.3, 200);
+                List<String> charFrameMap = FileRecoder.makePicture(tokens, charFrame, 300);
+                try (
+                        FileOutputStream fos = new FileOutputStream("src/test/java/BadApple.java");
+                        FileOutputStream frameOS = new FileOutputStream(frameRecordPath)
+                ) {
+                    frameOS.write(String.valueOf(++frameNum).getBytes());
+                    for (String s : charFrameMap) {
+//                        System.out.print(s);
+                        fos.write((s).getBytes());
+                    }
+                } catch (Exception _) {}
+                robot.delay(2000);
+                AXImage axImage = window.captureWindow();
+                axImage.write(new File(String.format("D:/Users/Desktop/captures/capture_%04d.png", frameNum)));
+                robot.mousePress(InputEvent.BUTTON1_DOWN_MASK);
+                robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
+            }
+
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+}
+
+
+
+class FileRecoder {
+    private static final Pattern startRegex = Pattern.compile("[a-zA-Z0-9_$]");
+    private static final Pattern endRegex = Pattern.compile("[; <>=+\\-,*/&%|\"'!:.{}\\[\\]()]");
+    private static final Set<String> MULTI_CHAR_OPERATORS = Set.of(
+            "++", "--", "&&", "||", "==", "!=", "<=", ">=", "<<", ">>", ">>>",
+            "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", ">>>=",
+            "->", "::"
+    );
+
+    public static List<String> makePicture(List<String> tokens, AXImage image, int tokenStartOffest) {
+        int imageWidth = image.getWidth();
+        List<String> result = new ArrayList<>();
+        List<Integer> imagePieces = parseWordLength(image);
+
+//        for (Integer imagePiece : imagePieces) {
+//            if (imagePiece < 0) for (int i = 0; i < -imagePiece; i++) System.out.print(" ");
+//            else if (imagePiece > 0) for (int i = 0; i < imagePiece; i++) System.out.print("*");
+//            else System.out.println();
+//        }
+        printTokenRange(tokens, 0, tokenStartOffest, imageWidth, result);
+        result.add("\n".repeat(4));
+
+        StringBuilder currentBuilder = new StringBuilder();
+        int useTokenIndex = tokenStartOffest;
+        for (Integer lineLength : imagePieces) {
+            if (lineLength < 0) {
+                result.add(" ".repeat(-lineLength));
+            } else if (lineLength == 0) {
+                result.add("\n");
+            } else {
+//                result.add("*".repeat(lineLength));
+                int tokenLength = 0;
+                int recordTokenIndex = useTokenIndex;
+                for (; useTokenIndex < tokens.size(); useTokenIndex++) {
+                    String token = tokens.get(useTokenIndex);
+                    if (tokenLength + token.length() > lineLength) {
+                        break;
+                    } else {
+                        tokenLength += token.length();
+                    }
+                }
+                int tokenCount = useTokenIndex - recordTokenIndex;
+                int spaceOffest = lineLength - tokenLength;
+                if (tokenCount > 1) {
+                    int spacePerToken = spaceOffest / (tokenCount - 1);
+                    int spaceLeft = spaceOffest % (tokenCount - 1);
+                    for (int i = 0; i < tokenCount; i++) {
+                        String token = tokens.get(recordTokenIndex + i);
+                        currentBuilder.append(token);
+                        currentBuilder.append(" ".repeat(spacePerToken + (i < spaceLeft ? 1 : 0)));
+                    }
+                }
+                if (tokenCount == 1) {
+                    currentBuilder.append(tokens.get(recordTokenIndex)).append(" ".repeat(spaceOffest));
+                }
+                else currentBuilder.append(" ".repeat(spaceOffest));
+                result.add(currentBuilder.toString());
+                currentBuilder.delete(0, currentBuilder.length());
+            }
+        }
+        result.add("\n".repeat(4));
+        printTokenRange(tokens, useTokenIndex, tokens.size(), imageWidth, result);
+
+        return result;
+    }
+
+    private static void printTokenRange(List<String> tokens, int start, int end, int imageWidth, List<String> result) {
+        int lineLength = 0;
+        StringBuilder lineBuilder = new StringBuilder();
+        for (int i = start; i < end; i++) {
+            if (lineLength > imageWidth) {
+                result.add(lineBuilder.toString());
+                result.add("\n");
+                lineLength = 0;
+                lineBuilder.delete(0, lineBuilder.length());
+            }
+            String token = tokens.get(i);
+            lineLength += token.length();
+            lineBuilder.append(token);
+        }
+        if (!lineBuilder.isEmpty()) {
+            result.add(lineBuilder.toString());
+            result.add("\n");
+        }
+    }
+
+    //>0: word, <0: empty, =0: break line
+    private static List<Integer> parseWordLength(AXImage image) {
+        List<Integer> imagePieces = new ArrayList<>();
+        boolean last = true; // true表示空白，false表示非空白
+        int stateStart = 0;
+        int lineCounter = 0;
+        int[] pixels = image.getPixels();
+        int width = image.getWidth();
+
+        for (int pixel : pixels) {
+            lineCounter++;
+            boolean empty = new Color(pixel).equals(Color.WHITE);
+
+            // 状态变化检测（放在换行检测之前）
+            if (last != empty && stateStart > 0) {
+                // 添加前一个状态段
+                imagePieces.add(last ? stateStart : -stateStart);
+                stateStart = 0;
+            }
+
+            // 处理当前像素
+            stateStart++;
+            last = empty;
+
+            // 换行检测
+            if (lineCounter == width) {
+                // 添加当前行的最后一个状态段
+                if (stateStart > 0) {
+                    imagePieces.add(empty ? stateStart : -stateStart);
+                }
+                // 添加换行标记
+                imagePieces.add(0);
+
+                // 重置计数器
+                lineCounter = 0;
+                stateStart = 0;
+                last = true; // 重置为空白状态开始新行
+            }
+        }
+
+        // 处理最后一行（如果没有完整换行）
+        if (stateStart > 0) {
+            imagePieces.add(last ? stateStart : -stateStart);
+        }
+
+        return imagePieces;
+    }
+
+    public static List<String> tokenizeJava(File file) {
+        List<String> lines = deleteNotes(readFile(file));
+        List<String> roughTokens = new ArrayList<>();
+        List<String> tokens = new ArrayList<>();
+
+        for (String line : lines) {
+//            if (!line.contains("if (substring")) continue;
+
+            boolean inWord = false;
+            boolean inString = false;
+            boolean isSingleQuotation = false;
+            StringBuilder wordBuilder = new StringBuilder();
+            StringBuilder stringBuilder = new StringBuilder();
+            for (int i = 0; i < line.length(); i++) {
+                char c = line.charAt(i);
+                boolean isSm = startRegex.matcher(String.valueOf(c)).find();
+                boolean isEm = endRegex.matcher(String.valueOf(c)).find();
+
+                if (inWord) {
+                    if (isEm) {
+                        inWord = false;
+                        if (!wordBuilder.isEmpty()) {
+                            roughTokens.add(wordBuilder.toString());
+                            wordBuilder.delete(0, wordBuilder.length());
+                        }
+                    } else {
+                        wordBuilder.append(c);
+                    }
+                }
+
+                if (inString) {
+                    stringBuilder.append(c);
+                    if (isStringQuotation(line, i) && isSingleStringQuotation(line, i) == isSingleQuotation) {
+                        inString = false;
+                        if (!stringBuilder.isEmpty()) {
+                            roughTokens.add(stringBuilder.toString());
+                            stringBuilder.delete(0, stringBuilder.length());
+                        }
+                        continue;
+                    }
+                }
+
+                if (!inWord && !inString) {
+                    if (isSm) {
+                        inWord = true;
+                        wordBuilder.append(c);
+                    }
+                    else if (isStringQuotation(line, i)) {
+                        inString = true;
+                        stringBuilder.append(c);
+                        isSingleQuotation = isSingleStringQuotation(line, i);
+                    }
+                    else {
+                        roughTokens.add(String.valueOf(c));
+                    }
+                }
+            }
+
+            if (!wordBuilder.isEmpty()) roughTokens.add(wordBuilder.toString());
+            if (!stringBuilder.isEmpty()) roughTokens.add(stringBuilder.toString());
+        }
+
+        List<String> mergedTokens = mergeOperators(roughTokens);
+        roughTokens.clear();
+        for (String mergedToken : mergedTokens) {
+            String token = mergedToken.trim();
+            if (token.isEmpty()) continue;
+            roughTokens.add(token);
+        }
+        for (int i = 0; i < roughTokens.size(); i++) {
+            String token = roughTokens.get(i);
+            tokens.add(token);
+            if (isWord(token.charAt(token.length() - 1))) {
+                if (isWord(roughTokens.get(i + 1).charAt(0))) {
+                    tokens.add(" ");
+                }
+            }
+        }
+
+//        tokens.forEach(System.out::println);
+        return tokens;
+    }
+
+    private static boolean isWord(char c) {
+        return startRegex.matcher(String.valueOf(c)).matches();
+    }
+
+    private static boolean isStringQuotation(String line, int index) {
+        boolean isQuotation = line.charAt(index) == '\'' || line.charAt(index) == '"';
+        if (index == 0 && isQuotation) {
+            return true;
+        }
+        if (index > 0 && isQuotation) {
+            if (index > 1 && line.charAt(index - 2) == '\\' && line.charAt(index - 1) == '\\') return true;
+            return line.charAt(index - 1) != '\\';
+        }
+        return false;
+    }
+
+    private static boolean isSingleStringQuotation(String line, int index) {
+        boolean isQuotation = line.charAt(index) == '\'';
+        if (index == 0 && isQuotation) {
+            return true;
+        }
+        if (index > 0 && isQuotation) {
+            if (index > 1 && line.charAt(index - 2) == '\\' && line.charAt(index - 1) == '\\') return true;
+            return line.charAt(index - 1) != '\\';
+        }
+        return false;
+    }
+
+    public static List<String> mergeOperators(List<String> tokens) {
+        List<String> mergedTokens = new ArrayList<>();
+        int i = 0;
+
+        while (i < tokens.size()) {
+            String current = tokens.get(i);
+
+            // 检查是否能与后续token组成多符号运算符
+            boolean merged = false;
+            for (int len = 4; len >= 2; len--) { // 从最长可能开始检查
+                if (i + len <= tokens.size()) {
+                    StringBuilder candidate = new StringBuilder();
+                    for (int j = 0; j < len; j++) {
+                        candidate.append(tokens.get(i + j));
+                    }
+                    String candidateStr = candidate.toString();
+
+                    if (MULTI_CHAR_OPERATORS.contains(candidateStr)) {
+                        mergedTokens.add(candidateStr);
+                        i += len;
+                        merged = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!merged) {
+                mergedTokens.add(current);
+                i++;
+            }
+        }
+
+        //numbers
+        for (int n = 0; n < mergedTokens.size(); n++) {
+            String token = mergedTokens.get(n);
+            if (token.matches("\\d+")) {
+                if (n + 1 < mergedTokens.size() && mergedTokens.get(n + 1).equals(".")) {
+                    mergedTokens.remove(n + 1);
+                    mergedTokens.set(n, token + "." + mergedTokens.get(n + 1));
+                    mergedTokens.remove(n + 1);
+                }
+            }
+        }
+
+        return mergedTokens;
+    }
+
+    private static List<String> deleteNotes(String input) {
+        String[] lines_arr = input.split("\n");
+        List<String> unNoted = new ArrayList<>();
+
+        // 添加跨行注释的状态标志
+        boolean inMultiLineComment = false;
+
+        for (String line : lines_arr) {
+            StringBuilder sb = new StringBuilder();
+            int findIndex = 0;
+            boolean inString = false;
+            char stringChar = 0; // 记录是单引号还是双引号
+
+            while (findIndex < line.length()) {
+                char currentChar = line.charAt(findIndex);
+
+                // 处理字符串状态
+                if (!inMultiLineComment && !inString && (currentChar == '"' || currentChar == '\'')) {
+                    inString = true;
+                    stringChar = currentChar;
+                    sb.append(currentChar);
+                    findIndex++;
+                    continue;
+                }
+
+                // 处理字符串结束
+                if (inString && currentChar == stringChar) {
+                    // 检查是否是转义字符
+                    if (findIndex > 0 && line.charAt(findIndex - 1) == '\\') {
+                        // 如果是转义的引号，继续在字符串中
+                        sb.append(currentChar);
+                        findIndex++;
+                        continue;
+                    }
+                    inString = false;
+                    sb.append(currentChar);
+                    findIndex++;
+                    continue;
+                }
+
+                // 如果在字符串中，直接添加字符
+                if (inString) {
+                    sb.append(currentChar);
+                    findIndex++;
+                    continue;
+                }
+
+                // 处理多行注释开始
+                if (!inMultiLineComment && findIndex + 1 < line.length() &&
+                        currentChar == '/' && line.charAt(findIndex + 1) == '*') {
+                    inMultiLineComment = true;
+                    findIndex += 2;
+                    continue;
+                }
+
+                // 处理多行注释结束
+                if (inMultiLineComment && findIndex + 1 < line.length() &&
+                        currentChar == '*' && line.charAt(findIndex + 1) == '/') {
+                    inMultiLineComment = false;
+                    findIndex += 2;
+                    continue;
+                }
+
+                // 如果在多行注释中，跳过字符
+                if (inMultiLineComment) {
+                    findIndex++;
+                    continue;
+                }
+
+                // 处理单行注释
+                if (findIndex + 1 < line.length() && currentChar == '/' && line.charAt(findIndex + 1) == '/') {
+                    break; // 跳过行尾所有内容
+                }
+
+                // 普通字符，添加到结果
+                sb.append(currentChar);
+                findIndex++;
+            }
+
+            String resultLine = sb.toString().trim();
+            if (!resultLine.isEmpty()) {
+                unNoted.add(resultLine);
+            }
+        }
+
+        return unNoted;
+    }
+
+    private static String readFile(File file) {
+        try {
+            return Files.readString(file.toPath());
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Deprecated
+    private static List<String> deleteNotes2(String input) {
+        String[] lines_arr = input.split("\n");
+
+        List<String> unNoted = new ArrayList<>();
+
+        for (String line : lines_arr) {
+            StringBuilder sb = new StringBuilder();
+            int findIndex = 0;
+            boolean inAnnotation = false;
+//            boolean inString = false;
+            while (findIndex < line.length()) {
+                String substring = line.substring(findIndex);
+//                if (findIndex > 0 && (line.charAt(findIndex - 1) != '\\' && substring.charAt(0) == '"') || substring.charAt(0) == '"') inString = !inString;
+//                if (inString) continue;
+                if (substring.startsWith("//")) break;
+                if (substring.startsWith("/*")) {
+                    inAnnotation = true;
+                    findIndex++;
+                }
+                if (substring.startsWith("*/")) {
+                    inAnnotation = false;
+                    findIndex += 2;
+                }
+                if (inAnnotation) {
+                    findIndex++;
+                    continue;
+                }
+                sb.append(line.charAt(findIndex++));
+            }
+            String trimmed = sb.toString().trim();
+            if (!trimmed.isEmpty()) unNoted.add(trimmed);
+        }
+
+        return unNoted;
+    }
+
+}
+
+class AXImage {
+
+    private final int[] pixels;
+    int width, height;
+
+    public AXImage(int width, int height) {
+        this.width = width;
+        this.height = height;
+        pixels = new int[width * height];
+    }
+
+    public AXImage(int[] data, int width, int height) {
+        this.width = width;
+        this.height = height;
+        pixels = data;
+    }
+
+    public AXImage(BufferedImage bi) {
+        this.width = bi.getWidth();
+        this.height = bi.getHeight();
+        pixels = new int[width * height];
+        bi.getRGB(0, 0, width, height, pixels, 0, width);
+    }
+
+    public AXImage(File file) {
+        BufferedImage bi;
+        try {
+            bi = ImageIO.read(file);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+        this.width = bi.getWidth();
+        this.height = bi.getHeight();
+        pixels = new int[width * height];
+        bi.getRGB(0, 0, width, height, pixels, 0, width);
+    }
+
+    public int[] getPixels() {
+        return pixels;
+    }
+
+    public int getWidth() {
+        return width;
+    }
+
+    public int getHeight() {
+        return height;
+    }
+
+    public Color getPixel(int x, int y) {
+        return new Color(pixels[x + y * width]);
+    }
+
+    public void setPixel(int x, int y, Color color) {
+        pixels[x + y * width] = color.getRGB();
+    }
+
+    public void write(File file) {
+        BufferedImage bi = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        bi.setRGB(0, 0, width, height, pixels, 0, width);
+        try {
+            ImageIO.write(bi, "png", file);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public AXImage charlize(double charRatio, int horizontalCharCount) {
+        int verticalCharCount = (int) Math.round(height * charRatio * horizontalCharCount / width);
+
+        int[] resized = resize(pixels, width, height, horizontalCharCount, verticalCharCount);
+        AXImage axImage = new AXImage(resized, horizontalCharCount, verticalCharCount);
+
+        for (int y = 0; y < verticalCharCount; y++) {
+            for (int x = 0; x < horizontalCharCount; x++) {
+                Color color = axImage.getPixel(x, y);
+                if (color.getRed() + color.getGreen() + color.getBlue() > 382) {
+                    axImage.setPixel(x, y, Color.BLACK);
+                } else {
+                    axImage.setPixel(x, y, Color.WHITE);
+                }
+            }
+        }
+        return axImage;
+    }
+
+    private int[] resize(int[] src, int srcWidth, int srcHeight, int dstWidth, int dstHeight) {
+        int[] dst = new int[dstWidth * dstHeight];
+        for (int y = 0; y < dstHeight; y++) {
+            for (int x = 0; x < dstWidth; x++) {
+                int srcX = (int) (x * ((double) srcWidth / dstWidth));
+                int srcY = (int) (y * ((double) srcHeight / dstHeight));
+                dst[y * dstWidth + x] = src[srcY * srcWidth + srcX];
+            }
+        }
+        return dst;
+    }
+
+}
+
+class VideoUtil {
+
+    /**
+     * 使用FFmpeg提取指定时间点的帧
+     * @param videoPath 视频文件路径
+     * @param outputPath 输出图片路径
+     * @param timeInSeconds 时间点（秒）
+     * @return 是否成功
+     */
+    public static boolean extractFrameAtTime(String videoPath, String outputPath, double timeInSeconds) {
+        try {
+            // 构建FFmpeg命令
+            String[] cmd = {
+                    "ffmpeg",
+                    "-ss", String.valueOf(timeInSeconds), // 跳转到指定时间
+                    "-i", videoPath,
+                    "-vframes", "1", // 只提取1帧
+                    "-q:v", "2", // 输出质量（2-31，2为最高质量）
+                    "-y", // 覆盖输出文件
+                    outputPath
+            };
+
+            Process process = Runtime.getRuntime().exec(cmd);
+            int exitCode = process.waitFor();
+
+            return exitCode == 0 && new File(outputPath).exists();
+
+        } catch (IOException | InterruptedException e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    /**
+     * 使用FFmpeg提取指定帧号的帧
+     * @param videoPath 视频文件路径
+     * @param outputPath 输出图片路径
+     * @param frameNumber 帧号
+     * @return 是否成功
+     */
+    public static boolean extractFrameByNumber(String videoPath, String outputPath, int frameNumber, double fps) {
+        try {
+            // 先获取视频帧率
+//            double fps = getVideoFPS(videoPath);
+            if (fps <= 0) return false;
+
+            // 根据帧号计算时间
+            double time = frameNumber / fps;
+
+            return extractFrameAtTime(videoPath, outputPath, time);
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    /**
+     * 获取视频帧率
+     */
+    public static double getVideoFPS(String videoPath) {
+        try {
+            String[] cmd = {
+                    "ffprobe",
+                    "-v", "error",
+                    "-select_streams", "v:0",
+                    "-show_entries", "stream=r_frame_rate",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    videoPath
+            };
+
+            Process process = Runtime.getRuntime().exec(cmd);
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()));
+
+            String fpsStr = reader.readLine();
+            process.waitFor();
+
+            if (fpsStr != null && fpsStr.contains("/")) {
+                String[] parts = fpsStr.split("/");
+                double num = Double.parseDouble(parts[0]);
+                double den = Double.parseDouble(parts[1]);
+                return num / den;
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return -1;
+    }
+
+}
+
+class Window {
+
+    private final Robot robot;
+    private HWND window = null;
+
+    public Window() {
+        try {
+            robot = new Robot();
+        } catch (AWTException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void selectWindow(String title) {
+        window = User32.INSTANCE.FindWindow(null, title);
+
+//        if (window != null) System.out.println("Found window: {}", title);
+        if (window == null) throw new RuntimeException("No window found: " + title);
+    }
+
+    public AXImage captureWindow() {
+        WinDef.RECT rect = getClientRect();
+
+        double scaleFactor = getScaleFactor();
+        Rectangle rbtRect = new Rectangle(
+                (int) Math.round(rect.left / scaleFactor),
+                (int) Math.round(rect.top / scaleFactor),
+                (int) Math.round((rect.right - rect.left) / scaleFactor),
+                (int) Math.round((rect.bottom - rect.top) / scaleFactor)
+        );
+
+
+        MultiResolutionImage mrImage = robot.createMultiResolutionScreenCapture(rbtRect);
+        BufferedImage highRes = (BufferedImage) mrImage.getResolutionVariants().getLast();
+        return new AXImage(highRes);
+    }
+
+    public AXImage captureWindowWithResize(int width, int height) {
+        AXImage sourceImage = captureWindow();
+        AXImage resizedImage = new AXImage(width, height);
+
+        double scaleX = width / (double) sourceImage.getWidth();
+        double scaleY = height / (double) sourceImage.getHeight();
+
+        int[] sourceImageData = sourceImage.getPixels();
+        int[] resizedImageData = resizedImage.getPixels();
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int sourceX = (int) (x / scaleX);
+                int sourceY = (int) (y / scaleY);
+
+                int sourceIndex = (sourceY * sourceImage.getWidth() + sourceX);
+                int resizedIndex = (y * width + x);
+                resizedImageData[resizedIndex] = sourceImageData[sourceIndex];
+            }
+        }
+
+//        try {
+//            resizedImage.save(new File("D:/Users/Desktop/temp/" + System.currentTimeMillis() + ".png"));
+//        } catch (IOException e) {
+//            throw new RuntimeException(e);
+//        }
+        return resizedImage;
+    }
+
+    public static double getScaleFactor() {
+        return GraphicsEnvironment.getLocalGraphicsEnvironment()
+                .getDefaultScreenDevice()
+                .getDefaultConfiguration()
+                .getDefaultTransform()
+                .getScaleX();
+    }
+
+    public WinDef.RECT getClientRect() {
+        WinDef.RECT clientRect = new WinDef.RECT();
+        if (!User32Extension.INSTANCE.GetClientRect(window, clientRect)) {
+            throw new RuntimeException("GetClientRect failed");
+        }
+
+        WinDef.POINT topLeft = new WinDef.POINT(clientRect.left, clientRect.top);
+        WinDef.POINT bottomRight = new WinDef.POINT(clientRect.right, clientRect.bottom);
+
+        User32Extension.INSTANCE.ClientToScreen(window, topLeft);
+        User32Extension.INSTANCE.ClientToScreen(window, bottomRight);
+
+        WinDef.RECT screenRect = new WinDef.RECT();
+        screenRect.left   = topLeft.x;
+        screenRect.top    = topLeft.y;
+        screenRect.right  = bottomRight.x;
+        screenRect.bottom = bottomRight.y;
+
+        return screenRect;
+    }
+
+    private interface User32Extension extends StdCallLibrary {
+        User32Extension INSTANCE = Native.load("user32", User32Extension.class, com.sun.jna.win32.W32APIOptions.DEFAULT_OPTIONS);
+
+        boolean GetClientRect(HWND hWnd, WinDef.RECT rect);
+        boolean ClientToScreen(HWND hWnd, WinDef.POINT point);
+    }
+}
